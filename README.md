@@ -1,96 +1,91 @@
-# Query Risk Scoring – PoC
+# Query Risk Scoring – Proof of Concept
 
-This is a simple, self-contained proof of concept that scores incoming SQL queries for risk before they ever touch a compute engine. The goal: catch expensive or unsafe patterns early and give the platform a way to avoid accidental over-consumption, fan-outs, bad joins and unnecessary cluster pressure.
+This is a small but functional prototype for estimating the execution-risk of SQL queries before they hit the engine. The goal is simple: detect expensive patterns early, reduce cluster blow-ups, and give the planner enough signal to size resources intelligently.
 
-The system runs locally but mirrors how a production control plane hook would work inside e6data.
-
----
-
-## What this PoC actually does
-
-A SQL query goes through three steps:
-
-1. **Metadata extraction**
-   The script breaks down the query into structural features: table counts, joins, subqueries, SELECT *, estimated table sizes, join fan-out, sort cost, filters, window functions, cartesian joins, etc.
-
-2. **Risk scoring**
-   An XGBoost model trained on synthetic_v3.csv outputs low / medium / high risk.
-   Accuracy is ~89% on the held-out set. SHAP is integrated for transparency.
-
-3. **Rule overrides**
-   Some patterns are so clearly unsafe that ML is skipped:
-
-   * ON 1=1 / CROSS JOIN → forced high
-   * SELECT * on a table > 20M rows → forced high
-   * Other pathological expansions
-
-This mix gives nuance when needed (ML) and guarantees safety when required (rules).
+Everything here is local, fast, and self-contained so it’s easy to review.
 
 ---
 
-## Why this is useful to an engine like e6data
+## What this does
 
-* Protects the cluster from accidental high-cost queries
-* Gives the gateway a fast, cheap pre-execution hook
-* Sets the stage for auto-tuning: slot sizing, spill prevention, adaptive parallelism
-* Integrates naturally into observability and telemetry
-* Helps enforce safety and governance without blocking legitimate workloads
+* Parses an incoming SQL query
+* Extracts structural features (joins, nesting, SELECT *, window functions, table sizes, etc.)
+* Applies basic heuristics to catch catastrophic patterns outright (Cartesian joins, huge SELECT *)
+* Runs an XGBoost classifier trained on synthetic labeled queries
+* Returns:
 
-The whole thing runs in milliseconds and can scale linearly as a microservice.
+  * risk class (low / medium / high)
+  * probabilities
+  * extracted metadata
+  * SHAP explanation for model-driven decisions
 
----
-
-## Quick flow (how a query moves through the system)
-
-```mermaid
-%%{init: {'theme':'neutral'}}%%
-flowchart LR
-
-A[User submits SQL] --> B[Metadata Extractor]
-B --> C[Model risk score]
-B -->|Unsafe pattern| D[Rule override → High]
-C --> E[SHAP explanation]
-D --> F[JSON builder]
-C --> F
-B --> F
-F --> H[Return risk score + metadata]
-```
+The entire scoring pipeline runs in a few milliseconds.
 
 ---
 
-## How this fits around an execution engine (conceptual)
+## Why this is useful
 
-```mermaid
-%%{init: {'theme':'dark'}}%%
-graph TB
-    User[User / API]
-    Gateway[Control Plane]
-    Risk[Query Risk Service]
+This is the kind of lightweight probe that can sit between a query gateway and an execution planner.
+It gives the engine a clear win:
 
-    Planner[Execution Planner]
-    Engine[e6data Engine]
-    Storage[Object Storage]
+* Detect unbounded fan-out before it hits compute
+* Catch SELECT * on big fact tables
+* Spot deep nesting and window-heavy workloads
+* Produce a consistent risk score the planner can act on
+* Provide explainability so the decision isn’t a black box
+* Easy to retrain as more telemetry comes in
 
-    Telemetry[Telemetry]
-    Obs[Observability]
-    Store[Label Store]
-
-    User --> Gateway
-    Gateway -->|Pre-check| Risk
-    Risk -->|High| Gateway
-    Risk -->|OK| Planner
-
-    Planner --> Engine
-    Engine --> Storage
-
-    Planner --> Telemetry
-    Telemetry --> Obs
-    Obs --> Store
-```
+It’s a clean way to reduce waste and protect shared clusters without slowing anything down.
 
 ---
 
-## How to run it
+## Risk labeling (how the synthetic dataset was built)
+
+The model is trained on synthetic queries, but the labels follow simple objective rules so the classifier learns patterns that actually map to engine pressure.
+
+**Low Risk**
+
+* small tables
+* ≤1 join
+* no heavy operations
+* predictable cardinality
+
+**Medium Risk**
+
+* mid-sized tables
+* 2–3 joins
+* window functions
+* moderate subquery depth
+* some uncertainty in row explosion
+
+**High Risk**
+
+* Cartesian joins
+* huge tables
+* SELECT * on large fact tables
+* deep nesting
+* multi-join chains with poor filters
+* patterns that cause shuffle/scan spikes
+
+Hard overrides are applied even before the model runs, so catastrophic queries never sneak through.
+
+---
+
+## Model performance (quick view)
+
+Based on the latest synthetic dataset:
+
+* accuracy: ~0.89
+* low false-negatives (high-risk marked low): eliminated through rule overrides
+* false-positives: acceptable for a PoC
+* multiclass separation is stable
+* SHAP values consistently reflect the real contributors (joins, table sizes, star-selects)
+
+Good enough to demonstrate the concept. Easy to improve once real logs are available.
+
+---
+
+## How to run
 
 Install deps:
 
@@ -98,19 +93,25 @@ Install deps:
 pip install -r requirements.txt
 ```
 
-Single query:
+Train:
 
 ```
-python infer.py "SELECT * FROM users"
+python train_model.py
 ```
 
-Batch:
+Single query inference:
 
 ```
-python batch_infer.py test_queries.txt
+python infer.py "SELECT * FROM big_sales_table WHERE amount > 500"
 ```
 
-UI demo:
+Batch test (runs all 60 curated SQL cases):
+
+```
+python batch_infer.py
+```
+
+Streamlit UI:
 
 ```
 streamlit run app_streamlit.py
@@ -118,21 +119,75 @@ streamlit run app_streamlit.py
 
 ---
 
-## File layout
+## Output structure
 
 ```
-infer.py
-batch_infer.py
-app_streamlit.py
-metadata_extractor.py
-train_model.py
-synthetic_generator.py
-tables_config.py
-synthetic.csv
-synthetic_v3.csv
-test_queries.txt
-requirements.txt
-xgb_query_risk.joblib
+{
+  prediction: 0/1/2,
+  probabilities: [...],
+  metadata: {...},
+  shap: {...}
+}
+```
+
+Metadata includes table counts, join counts, estimated table size, join output estimates, flags for SELECT *, Cartesian joins, windows, filters, etc.
+
+SHAP explains what pushed the score in that direction.
+
+---
+
+## Architecture (scoring pipeline)
+
+```md
+%%{init: {'theme':'neutral'}}%%
+flowchart LR
+
+A[User submits SQL] --> B[Query sent to Risk Service]
+
+B --> C[Metadata Extractor<br/>Parse SQL → numeric features]
+C --> D[Model<br/>Predict low / med / high]
+
+D --> E[SHAP<br/>Feature contributions (model-only)]
+C -->|Hard rule trigger| F[Override → High Risk]
+
+E --> G[Build JSON Response]
+F --> G
+D --> G
+C --> G
+
+G --> H[Return risk score + metadata + explanations]
 ```
 
 ---
+
+## Where this fits in a real system
+
+```md
+%%{init: {'theme':'dark'}}%%
+graph TB
+    User[User SQL UI / API]
+    Gateway[Query Control Plane / Gateway]
+    Risk[Query-Risk Scoring Probe]
+    
+    Planner[Execution Planner]
+    Engine[e6data Engine]
+    Storage[Object Storage]
+
+    Telemetry[Telemetry + Logging]
+    Observability[Observability Pipeline]
+    Datastore[Training Data Store]
+
+    User -->|Submit SQL| Gateway
+    Gateway -->|Pre-exec check| Risk
+
+    Risk -->|High risk → warn/block| Gateway
+    Risk -->|Safe → allow| Planner
+
+    Planner --> Engine
+    Engine --> Storage
+
+    Planner --> Telemetry
+    Telemetry --> Observability
+    Observability --> Datastore
+```
+
