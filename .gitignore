@@ -1,0 +1,45 @@
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+
+# --- Virtual env ---
+venv/
+env/
+.venv/
+ENV/
+env.bak/
+
+# --- Model artifacts ---
+*.joblib
+*.model
+*.bin
+
+# --- Streamlit cache ---
+.streamlit/
+**/.streamlit/
+
+# --- Data files ---
+synthetic.csv
+synthetic_v3.csv
+*.parquet
+*.db
+*.sqlite
+
+# --- Logs ---
+*.log
+
+# --- IDE / OS files ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- Batch output ---
+batch_output/
