@@ -138,7 +138,7 @@ SHAP explains what pushed the score in that direction.
 
 ## Architecture (scoring pipeline)
 
-```md
+```mermaid
 %%{init: {'theme':'neutral'}}%%
 flowchart LR
 
@@ -162,7 +162,7 @@ G --> H[Return risk score + metadata + explanations]
 
 ## Where this fits in a real system
 
-```md
+```mermaid
 %%{init: {'theme':'dark'}}%%
 graph TB
     User[User SQL UI / API]
