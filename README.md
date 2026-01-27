@@ -141,20 +141,15 @@ SHAP explains what pushed the score in that direction.
 ```mermaid
 %%{init: {'theme':'neutral'}}%%
 flowchart LR
-
 A[User submits SQL] --> B[Query sent to Risk Service]
-
-B --> C[Metadata Extractor<br/>Parse SQL → numeric features]
+B --> C[Metadata Extractor<br/>Parse SQL to numeric features]
 C --> D[Model<br/>Predict low / med / high]
-
-D --> E[SHAP<br/>Feature contributions (model-only)]
-C -->|Hard rule trigger| F[Override → High Risk]
-
+D --> E[SHAP<br/>Feature contributions model-only]
+C -->|Hard rule trigger| F[Override to High Risk]
 E --> G[Build JSON Response]
 F --> G
 D --> G
 C --> G
-
 G --> H[Return risk score + metadata + explanations]
 ```
 
