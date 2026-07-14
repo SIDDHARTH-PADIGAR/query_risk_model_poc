@@ -1,4 +1,4 @@
-# Query Risk Scoring – Proof of Concept
+# Pre-Execution Query Admission Control
 
 This is a small but functional prototype for estimating the execution-risk of SQL queries before they hit the engine. The goal is simple: detect expensive patterns early, reduce cluster blow-ups, and give the planner enough signal to size resources intelligently.
 
